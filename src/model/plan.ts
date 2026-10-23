@@ -2,6 +2,7 @@ import { DEFAULT_CONFIG, normalise as normaliseShelving, type Config as Shelving
 import { quote as shelvingQuote } from "../shelving/quote.ts";
 import { product, type Product } from "./catalogue.ts";
 import { normaliseRoom, type Room } from "./room.ts";
+import { arrangeInRow } from "./house.ts";
 
 /**
  * A plan is the rooms and the furniture in them. Items are placed by their centre on the floor plan (cm) and turned
@@ -40,14 +41,15 @@ export const newId = (prefix: string) => `${prefix}${Date.now().toString(36).sli
 export const DEFAULT_PLAN: Plan = {
   rooms: [
     {
-      id: "lounge", name: "Lounge", shape: "rect", width: 450, length: 380, notchW: 120, notchL: 110, height: 260, floor: "oak", wallColor: "#f2efe9",
+      id: "lounge", name: "Lounge", shape: "rect", width: 450, length: 380, notchW: 120, notchL: 110, height: 260, floor: "oak", wallColor: "#f2efe9", x: 0, z: 0,
       openings: [
         { id: "d1", kind: "door", wall: 2, offset: 40, width: 82, hinge: "left" },
+        { id: "d3", kind: "door", wall: 1, offset: 285, width: 82, hinge: "right" }, // through to the bedroom
         { id: "w1", kind: "window", wall: 0, offset: 140, width: 160 }
       ]
     },
     {
-      id: "bed1", name: "Main bedroom", shape: "L", width: 420, length: 380, notchW: 130, notchL: 120, height: 260, floor: "ash", wallColor: "#ece8e1",
+      id: "bed1", name: "Main bedroom", shape: "L", width: 420, length: 380, notchW: 130, notchL: 120, height: 260, floor: "ash", wallColor: "#ece8e1", x: 470, z: 0,
       openings: [
         { id: "d2", kind: "door", wall: 3, offset: 20, width: 82, hinge: "right" },
         { id: "w2", kind: "window", wall: 0, offset: 120, width: 150 }
@@ -76,8 +78,8 @@ const fromB64 = (s: string) => new TextDecoder().decode(Uint8Array.from(atob(s.r
 /** Rounds positions and drops defaults, so links stay short. */
 export function encodePlan(p: Plan): string {
   const compact = {
-    v: 1,
-    r: p.rooms.map((r) => [r.id, r.name, r.shape, r.width, r.length, r.notchW, r.notchL, r.height, r.floor, r.wallColor, r.openings.map((o) => [o.kind === "door" ? 1 : 0, o.wall, o.offset, o.width, o.hinge === "right" ? 1 : 0])]),
+    v: 2,
+    r: p.rooms.map((r) => [r.id, r.name, r.shape, r.width, r.length, r.notchW, r.notchL, r.height, r.floor, r.wallColor, r.openings.map((o) => [o.kind === "door" ? 1 : 0, o.wall, o.offset, o.width, o.hinge === "right" ? 1 : 0]), r.x, r.z]),
     i: p.items.map((it) => [it.roomId, it.productId, Math.round(it.x), Math.round(it.z), it.rot, it.shelving ?? 0])
   };
   return toB64(JSON.stringify(compact));
@@ -87,20 +89,21 @@ export function encodePlan(p: Plan): string {
 export function decodePlan(s: string): Plan | null {
   let raw: { v?: number; r?: unknown[]; i?: unknown[] };
   try { raw = JSON.parse(fromB64(s)); } catch { return null; }
-  if (raw?.v !== 1 || !Array.isArray(raw.r) || !Array.isArray(raw.i)) return null;
-  const rooms: Room[] = [];
+  if ((raw?.v !== 1 && raw?.v !== 2) || !Array.isArray(raw.r) || !Array.isArray(raw.i)) return null;
+  let rooms: Room[] = [];
   for (const r of raw.r) {
     if (!Array.isArray(r)) continue;
-    const [id, name, shape, width, length, notchW, notchL, height, floor, wallColor, ops] = r as [string, string, string, number, number, number, number, number, string, string, unknown[]];
+    const [id, name, shape, width, length, notchW, notchL, height, floor, wallColor, ops, x, z] = r as [string, string, string, number, number, number, number, number, string, string, unknown[], number, number];
     rooms.push(normaliseRoom({
       id: String(id), name: String(name), shape: shape === "L" ? "L" : "rect", width: +width, length: +length, notchW: +notchW, notchL: +notchL, height: +height,
-      floor: floor as Room["floor"], wallColor: String(wallColor),
+      floor: floor as Room["floor"], wallColor: String(wallColor), x: +x || 0, z: +z || 0,
       openings: (Array.isArray(ops) ? ops : []).filter(Array.isArray).map((o, k) => {
         const [door, wall, offset, width, right] = o as number[];
         return { id: `o${k}`, kind: door ? "door" : "window", wall: +wall, offset: +offset, width: +width, hinge: right ? "right" : "left" } as const;
       })
     }));
   }
+  if (raw.v === 1) rooms = arrangeInRow(rooms); // links from before the house plan had no room positions
   const ids = new Set(rooms.map((r) => r.id));
   const items: Item[] = [];
   raw.i.forEach((it, k) => {

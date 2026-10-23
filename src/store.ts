@@ -4,6 +4,7 @@ import { product } from "./model/catalogue.ts";
 import { footprint, insideRoom, overlaps } from "./model/fit.ts";
 import { DEFAULT_PLAN, decodePlan, encodePlan, newId, type Item, type Plan, type Rotation } from "./model/plan.ts";
 import { DOOR, WINDOW, normaliseRoom, walls, type Opening, type Room } from "./model/room.ts";
+import { GAP, houseBounds } from "./model/house.ts";
 
 /**
  * App state: the plan (rooms and furniture), which room you're in, what's selected, and history.
@@ -12,6 +13,9 @@ import { DOOR, WINDOW, normaliseRoom, walls, type Opening, type Room } from "./m
  */
 
 export type ViewMode = "3d" | "plan";
+/** One room at a time, or the whole house. */
+export type Scope = "room" | "house";
+export type PanelTab = "furniture" | "room" | "house" | "catalogue";
 
 interface State {
   plan: Plan;
@@ -20,12 +24,19 @@ interface State {
   past: Plan[];
   future: Plan[];
   mode: ViewMode;
+  scope: Scope;
+  tab: PanelTab;
   snap: boolean;
   dragging: boolean;
   frameNonce: number;
 
   apply(change: (p: Plan) => Plan): void;
   setRoom(id: string): void;
+  setScope(s: Scope): void;
+  setTab(t: PanelTab): void;
+  /** The catalogue changed: give every item a new identity so sizes, models and checks update. No undo step. */
+  refreshProducts(): void;
+  moveRoom(id: string, x: number, z: number): void;
   addRoom(): void;
   updateRoom(patch: Partial<Room>): void;
   removeRoom(id: string): void;
@@ -107,6 +118,8 @@ export const useStore = create<State>()((set, get) => ({
   past: [],
   future: [],
   mode: "3d",
+  scope: "room",
+  tab: "furniture",
   snap: true,
   dragging: false,
   frameNonce: 0,
@@ -118,11 +131,21 @@ export const useStore = create<State>()((set, get) => ({
     set({ plan: next, past: [...past, plan].slice(-HISTORY), future: [] });
   },
 
-  setRoom: (id) => set((s) => ({ room: id, selected: null, frameNonce: s.frameNonce + 1 })),
+  setRoom: (id) => set((s) => ({ room: id, selected: null, frameNonce: s.scope === "room" ? s.frameNonce + 1 : s.frameNonce })),
+  setScope: (scope) => set((s) => ({ scope, selected: null, frameNonce: s.frameNonce + 1, tab: scope === "house" ? "house" : s.tab === "house" ? "furniture" : s.tab })),
+  setTab: (tab) => set({ tab }),
+  refreshProducts: () => set((s) => ({ plan: { ...s.plan, items: s.plan.items.map((i) => ({ ...i })) } })),
   addRoom() {
     const id = newId("r"), n = get().plan.rooms.length + 1;
-    get().apply((p) => ({ ...p, rooms: [...p.rooms, { id, name: `Room ${n}`, shape: "rect", width: 350, length: 300, notchW: 100, notchL: 100, height: 260, floor: "oak", wallColor: "#f2efe9", openings: [{ id: newId("o"), kind: "door", wall: 2, offset: 30, width: DOOR.default, hinge: "left" }] }] }));
+    const b = houseBounds(get().plan.rooms);
+    // New rooms start beside the house, back to back with it, ready to be dragged into place
+    get().apply((p) => ({ ...p, rooms: [...p.rooms, { id, name: `Room ${n}`, shape: "rect", width: 350, length: 300, notchW: 100, notchL: 100, height: 260, floor: "oak", wallColor: "#f2efe9", x: b.x1 + GAP, z: b.z0, openings: [{ id: newId("o"), kind: "door", wall: 2, offset: 30, width: DOOR.default, hinge: "left" }] }] }));
     get().setRoom(id);
+    set({ tab: "room" });
+  },
+  moveRoom(id, x, z) {
+    const f = (p: Plan) => mapRoom(p, id, (r) => ({ ...r, x, z }));
+    if (get().dragging) set((s) => ({ plan: f(s.plan) })); else get().apply(f);
   },
   updateRoom(patch) { get().apply((p) => mapRoom(p, get().room, (r) => ({ ...r, ...patch }))); },
   removeRoom(id) {

@@ -1,26 +1,18 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
-import { CATEGORY_LABELS, PRODUCTS, product, type Category } from "../model/catalogue.ts";
+import { CATEGORY_LABELS, product, products, type Category, type Product } from "../model/catalogue.ts";
+import { useCatalogue } from "../admin/catalogueStore.ts";
+import { CatalogueEditor, IS_ADMIN } from "../admin/CatalogueEditor.tsx";
+import { useProductImage } from "../scene/Thumbnails.tsx";
 import { check } from "../model/fit.ts";
 import { dimsOf, encodePlan, type Item } from "../model/plan.ts";
 import { DOOR, FLOORS, WINDOW, floorArea, walls, type Floor, type Room } from "../model/room.ts";
 import { BAY_WIDTHS, CASTOR_MAX_HEIGHT, DEPTHS, FRAMES, HEIGHTS, MAX_BAYS, MIN_BAYS, SHELVES, type FrameFinish, type ShelfMaterial } from "../shelving/config.ts";
 import { formatRand } from "../shelving/quote.ts";
-import { currentRoom, roomItems, useStore } from "../store.ts";
-import { Field, Segmented, Stepper } from "./controls.tsx";
+import { currentRoom, roomItems, useStore, type PanelTab } from "../store.ts";
+import { connections, overlappingRooms } from "../model/house.ts";
+import { Field, NumberInput, Segmented, Stepper } from "./controls.tsx";
 import { toast } from "./toast.ts";
-
-/** A number box that only applies the value when you press Enter or leave it, so typing "350" doesn't snap at "3". */
-function NumberInput({ label, value, onCommit }: { label: string; value: number; onCommit: (v: number) => void }) {
-  const [draft, setDraft] = useState(String(value));
-  useEffect(() => setDraft(String(value)), [value]);
-  const commit = () => { const v = Number(draft); if (Number.isFinite(v) && v !== value) onCommit(v); else setDraft(String(value)); };
-  return (
-    <input className="text" inputMode="numeric" aria-label={label} value={draft}
-      onChange={(e) => setDraft(e.target.value.replace(/[^0-9]/g, ""))} onBlur={commit}
-      onKeyDown={(e) => { if (e.key === "Enter") { commit(); (e.target as HTMLInputElement).blur(); } }} />
-  );
-}
 
 const WALL_COLORS = ["#f2efe9", "#e7e1d6", "#dfe5e1", "#e3e6ec", "#efe3dc", "#d9d3c7"];
 
@@ -29,13 +21,17 @@ export function Panel() {
   const items = useStore(useShallow(roomItems));
   const selected = useStore((s) => s.selected);
   const sel = items.find((i) => i.id === selected) ?? null;
+  const tab = useStore((s) => s.tab);
   return (
     <aside className="panel" aria-label="Rooms, furniture and fit">
       <RoomTabs />
-      <FitReport room={room} items={items} />
-      {sel ? <ItemCard room={room} it={sel} items={items} /> : <Catalogue />}
-      <RoomEditor room={room} />
-      <Basket items={items} />
+      <PanelTabs />
+      {(tab === "furniture" || tab === "room") && <FitReport room={room} items={items} />}
+      {tab === "furniture" && (sel ? <ItemCard room={room} it={sel} items={items} /> : <Catalogue />)}
+      {tab === "furniture" && <Basket items={items} />}
+      {tab === "room" && <RoomEditor room={room} />}
+      {tab === "house" && <HouseCard />}
+      {tab === "catalogue" && IS_ADMIN && <CatalogueEditor />}
       <footer className="panel-foot">
         <button type="button" className="btn primary" onClick={share}>Copy share link</button>
         <button type="button" className="btn" onClick={() => { useStore.getState().reset(); toast("Back to the example rooms"); }}>Start over</button>
@@ -72,6 +68,67 @@ function RoomTabs() {
   );
 }
 
+function PanelTabs() {
+  const tab = useStore((s) => s.tab);
+  const { setTab, setScope } = useStore.getState();
+  const tabs: [PanelTab, string][] = [["furniture", "Furniture"], ["room", "Room size"], ["house", "House"], ...(IS_ADMIN ? [["catalogue", "Catalogue"] as [PanelTab, string]] : [])];
+  return (
+    <nav className="panel-tabs" role="tablist" aria-label="Panel">
+      {tabs.map(([t, label]) => (
+        <button key={t} role="tab" type="button" aria-selected={tab === t}
+          onClick={() => { setTab(t); setScope(t === "house" ? "house" : "room"); }}>{label}</button>
+      ))}
+    </nav>
+  );
+}
+
+function HouseCard() {
+  const rooms = useStore((s) => s.plan.rooms);
+  const items = useStore((s) => s.plan.items);
+  const current = useStore((s) => s.room);
+  const s = useStore.getState();
+  const conns = useMemo(() => connections(rooms), [rooms]);
+  const overlaps = useMemo(() => overlappingRooms(rooms), [rooms]);
+  const name = (id: string) => rooms.find((r) => r.id === id)?.name ?? "?";
+  const total = rooms.reduce((a, r) => a + floorArea(r), 0);
+  return (
+    <>
+      <section className="section">
+        <div className="fit-head"><h2 className="plain">Your house</h2><span>{rooms.length} rooms · {total.toFixed(1)} m²</span></div>
+        <p className="hint">Drag a room's floor to move it. Rooms snap together wall to wall. A door on a shared wall becomes a doorway into the next room, so you can see how the house flows.</p>
+        {overlaps.length > 0 && (
+          <ul className="issues">{overlaps.map(([a, b]) => <li key={a + b} className="error"><span>{name(a)} and {name(b)} overlap. Drag one of them apart.</span></li>)}</ul>
+        )}
+        <ul className="rooms">
+          {rooms.map((r) => {
+            const n = items.filter((i) => i.roomId === r.id).length, rep = check(r, items.filter((i) => i.roomId === r.id));
+            const bad = rep.issues.filter((i) => i.severity === "error").length, meh = rep.issues.filter((i) => i.severity === "warning").length;
+            return (
+              <li key={r.id} className={r.id === current ? "on" : undefined}>
+                <button type="button" onClick={() => s.setRoom(r.id)}>
+                  <b>{r.name}</b>
+                  <small>{r.width} × {r.length} cm{r.shape === "L" ? ", L-shaped" : ""} · {n} piece{n === 1 ? "" : "s"}</small>
+                </button>
+                <span className={"pill " + (bad ? "bad" : meh ? "meh" : "good")}>{bad ? `${bad} won't fit` : meh ? `${meh} squeeze${meh > 1 ? "s" : ""}` : "Fits"}</span>
+                <button type="button" className="btn small" onClick={() => { s.setRoom(r.id); s.setTab("furniture"); s.setScope("room"); }}>Open</button>
+              </li>
+            );
+          })}
+        </ul>
+        <button type="button" className="btn" onClick={() => s.addRoom()}>+ Add a room</button>
+      </section>
+      <section className="section">
+        <h2>How the rooms connect</h2>
+        {conns.length ? (
+          <ul className="links">{conns.map((c) => <li key={c.passage.id}><b>{name(c.from)}</b><span aria-hidden="true">⇄</span><b>{name(c.to)}</b><small>through a {Math.round(c.passage.width)} cm doorway</small></li>)}</ul>
+        ) : (
+          <p className="hint">No rooms are connected yet. Put two rooms wall to wall, then add a door on the shared wall in the Room size tab.</p>
+        )}
+      </section>
+    </>
+  );
+}
+
 function FitReport({ room, items }: { room: Room; items: Item[] }) {
   const report = useMemo(() => check(room, items), [room, items]);
   const select = useStore((s) => s.select);
@@ -99,8 +156,10 @@ function FitReport({ room, items }: { room: Room; items: Item[] }) {
 function Catalogue() {
   const [cat, setCat] = useState<Category | "all">("all");
   const add = useStore((s) => s.addItem);
-  const cats = useMemo(() => [...new Set(PRODUCTS.map((p) => p.category))], []);
-  const list = PRODUCTS.filter((p) => cat === "all" || p.category === cat);
+  const version = useCatalogue((s) => s.version);
+  const all = useMemo(() => products(), [version]); // eslint-disable-line react-hooks/exhaustive-deps
+  const cats = useMemo(() => [...new Set(all.map((p) => p.category))], [all]);
+  const list = all.filter((p) => cat === "all" || p.category === cat);
   return (
     <section className="section">
       <h2>Add furniture</h2>
@@ -111,7 +170,7 @@ function Catalogue() {
       <ul className="products">
         {list.map((p) => (
           <li key={p.id}>
-            <i className="dot" style={{ background: p.color }} aria-hidden="true" />
+            <ProductImage p={p} />
             <div><b>{p.name}</b><small>{p.kind === "shelving" ? "Design it in Shelfline, see it here" : `${p.w} × ${p.d} × ${p.h} cm · ${formatRand(p.price)}`}</small></div>
             <button type="button" className="btn small" onClick={() => { add(p.id); toast(`${p.name} added. Drag it into place.`); }}>Add</button>
           </li>
@@ -122,6 +181,13 @@ function Catalogue() {
   );
 }
 
+/** The product's photo, or a picture rendered from its 3D model. */
+function ProductImage({ p, big }: { p: Product; big?: boolean }) {
+  const src = useProductImage(p);
+  const cls = "thumb" + (big ? " big" : "");
+  return src ? <img className={cls} src={src} alt="" /> : <i className={cls + " blank"} style={{ background: p.color }} aria-hidden="true" />;
+}
+
 function ItemCard({ room, it, items }: { room: Room; it: Item; items: Item[] }) {
   const s = useStore.getState();
   const d = dimsOf(it), p = product(it.productId)!;
@@ -129,7 +195,8 @@ function ItemCard({ room, it, items }: { room: Room; it: Item; items: Item[] }) 
   return (
     <section className="section item">
       <div className="item-head">
-        <div>
+        <ProductImage p={p} big />
+        <div className="grow">
           <p className="eyebrow">{CATEGORY_LABELS[p.category]}</p>
           <h2>{d.name}</h2>
           <p className="sub">{d.w} × {d.d} × {Math.round(d.h)} cm · {formatRand(d.price)}</p>
@@ -179,9 +246,10 @@ function RoomEditor({ room }: { room: Room }) {
   const num = (v: string) => Number(v); // for the wall picker
   return (
     <section className="section">
-      <details className="room-edit">
-        <summary><h2>Room: {room.name}</h2><span>{room.width} × {room.length} cm</span></summary>
+      <div className="room-edit">
+        <div className="fit-head"><h2 className="plain">{room.name}</h2><span>{floorArea(room).toFixed(1)} m²</span></div>
         <div className="room-grid">
+          <p className="hint">Measure wall to wall at floor level. Every check uses these sizes.</p>
           <Field label="Name"><input className="text" value={room.name} maxLength={40} onChange={(e) => up({ name: e.target.value })} /></Field>
           <Field label="Shape"><Segmented label="Shape" value={room.shape} onChange={(v) => up({ shape: v })} choices={[{ value: "rect", label: "Rectangle" }, { value: "L", label: "L-shape" }]} /></Field>
           <div className="pair">
@@ -218,7 +286,7 @@ function RoomEditor({ room }: { room: Room }) {
           </div>
           {useStore.getState().plan.rooms.length > 1 && <button type="button" className="link danger" onClick={() => s.removeRoom(room.id)}>Delete this room</button>}
         </div>
-      </details>
+      </div>
     </section>
   );
 }

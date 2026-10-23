@@ -1,4 +1,4 @@
-import { useId, type ReactNode } from "react";
+import { useEffect, useId, useState, type ReactNode } from "react";
 
 /** Small, accessible form controls shared by the panel. */
 
@@ -48,3 +48,16 @@ export function Toggle({ label, checked, onChange, disabled, note }: { label: st
     </label>
   );
 }
+
+/** A number box that only applies the value when you press Enter or leave it, so typing "350" doesn't snap at "3". */
+export function NumberInput({ label, value, onCommit }: { label: string; value: number; onCommit: (v: number) => void }) {
+  const [draft, setDraft] = useState(String(value));
+  useEffect(() => setDraft(String(value)), [value]);
+  const commit = () => { const v = Number(draft); if (Number.isFinite(v) && v !== value) onCommit(v); else setDraft(String(value)); };
+  return (
+    <input className="text" inputMode="numeric" aria-label={label} value={draft}
+      onChange={(e) => setDraft(e.target.value.replace(/[^0-9]/g, ""))} onBlur={commit}
+      onKeyDown={(e) => { if (e.key === "Enter") { commit(); (e.target as HTMLInputElement).blur(); } }} />
+  );
+}
+

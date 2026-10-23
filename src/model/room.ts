@@ -34,6 +34,9 @@ export interface Room {
   floor: Floor;
   wallColor: string;
   openings: Opening[];
+  /** Where the room's top-left floor corner sits on the house plan, cm. */
+  x: number;
+  z: number;
 }
 
 export interface Wall { a: [number, number]; b: [number, number]; length: number; /** Unit normal pointing into the room. */ normal: [number, number] }
@@ -85,7 +88,9 @@ export function normaliseRoom(input: Room): Room {
     height: clamp(input.height, LIMITS.height[0], LIMITS.height[1]),
     floor: input.floor in FLOORS ? input.floor : "oak",
     wallColor: /^#[0-9a-f]{6}$/i.test(input.wallColor) ? input.wallColor : "#f2efe9",
-    openings: []
+    openings: [],
+    x: Math.round(Number.isFinite(input.x) ? Math.max(-5000, Math.min(5000, input.x)) : 0),
+    z: Math.round(Number.isFinite(input.z) ? Math.max(-5000, Math.min(5000, input.z)) : 0)
   };
   const ws = walls(r);
   for (const o of input.openings) {

@@ -1,8 +1,8 @@
 import { useMemo, useRef, useState } from "react";
 import * as THREE from "three";
-import { useFrame } from "@react-three/fiber";
+import { useFrame, type ThreeEvent } from "@react-three/fiber";
 import { Line } from "@react-three/drei";
-import { FLOORS, walls, outline, type Floor, type Room } from "../model/room.ts";
+import { FLOORS, walls, outline, type Floor, type Opening, type Room } from "../model/room.ts";
 import type { ViewMode } from "../store.ts";
 
 /**
@@ -55,14 +55,20 @@ function floorTexture(kind: Floor): THREE.CanvasTexture {
   return t;
 }
 
-function FloorMesh({ room }: { room: Room }) {
+export interface FloorHandlers {
+  onPointerDown?: (e: ThreeEvent<PointerEvent>) => void;
+  onPointerMove?: (e: ThreeEvent<PointerEvent>) => void;
+  onPointerUp?: (e: ThreeEvent<PointerEvent>) => void;
+}
+
+function FloorMesh({ room, handlers }: { room: Room; handlers?: FloorHandlers }) {
   const geo = useMemo(() => {
     // Shape in metres with z negated, then laid flat: ShapeGeometry's UVs are its coordinates, so 1 texture = 1 m
     const shape = new THREE.Shape(outline(room).map(([x, z]) => { const [wx, wz] = toWorld(room, x, z); return new THREE.Vector2(wx, -wz); }));
     return new THREE.ShapeGeometry(shape).rotateX(-Math.PI / 2);
   }, [room]);
   return (
-    <mesh geometry={geo} receiveShadow>
+    <mesh geometry={geo} receiveShadow {...handlers} onPointerCancel={handlers?.onPointerUp}>
       <meshStandardMaterial map={floorTexture(room.floor)} roughness={room.floor === "carpet" ? 1 : 0.7} />
     </mesh>
   );
@@ -70,8 +76,8 @@ function FloorMesh({ room }: { room: Room }) {
 
 interface Piece { x: number; z: number; sx: number; sz: number; y0: number; y1: number; wall: number }
 
-/** Wall boxes, with gaps for doors and windows and the corners filled. */
-function wallPieces(room: Room): { pieces: Piece[]; glass: Piece[]; sills: Piece[] } {
+/** Wall boxes, with gaps for doors, windows and doorways from neighbouring rooms, and the corners filled. */
+function wallPieces(room: Room, passages: Opening[]): { pieces: Piece[]; glass: Piece[]; sills: Piece[] } {
   const ws = walls(room), n = ws.length, H = room.height / 100;
   const pieces: Piece[] = [], glass: Piece[] = [], sills: Piece[] = [];
   const dir = (i: number) => { const w = ws[(i + n) % n]; return [(w.b[0] - w.a[0]) / w.length, (w.b[1] - w.a[1]) / w.length]; };
@@ -88,10 +94,11 @@ function wallPieces(room: Room): { pieces: Piece[]; glass: Piece[]; sills: Piece
       const along = s1 - s0;
       list.push({ x, z, sx: Math.abs(t[0]) * along + Math.abs(w.normal[0]) * depth, sz: Math.abs(t[1]) * along + Math.abs(w.normal[1]) * depth, y0, y1, wall: i });
     };
-    const ops = room.openings.filter((o) => o.wall === i).sort((a, b) => a.offset - b.offset);
+    const ops = [...room.openings, ...passages].filter((o) => o.wall === i).sort((a, b) => a.offset - b.offset);
     let cursor = -ext0;
     for (const o of ops) {
       const s0 = o.offset / 100, s1 = (o.offset + o.width) / 100;
+      if (s0 < cursor) { cursor = Math.max(cursor, s1); continue; } // overlapping openings (a doorway over a door)
       add(pieces, cursor, s0, 0, H);
       if (o.kind === "door") add(pieces, s0, s1, DOOR_H, H);
       else {
@@ -141,8 +148,16 @@ function Doors({ room, cut }: { room: Room; cut: boolean[] }) {
   );
 }
 
-export function RoomMesh({ room, mode }: { room: Room; mode: ViewMode }) {
-  const { pieces, glass, sills } = useMemo(() => wallPieces(room), [room]);
+export function RoomMesh({ room, mode, passages = [], centre = [0, 0], handlers, highlight }: {
+  room: Room; mode: ViewMode;
+  /** Doorways cut by a neighbouring room's door. */
+  passages?: Opening[];
+  /** Where this room's centre is in the world (it differs from the origin on the house plan). */
+  centre?: [number, number];
+  handlers?: FloorHandlers;
+  highlight?: boolean;
+}) {
+  const { pieces, glass, sills } = useMemo(() => wallPieces(room, passages), [room, passages]);
   const ws = useMemo(() => walls(room), [room]);
   const wallMat = useMemo(() => new THREE.MeshStandardMaterial({ color: room.wallColor, roughness: 0.92 }), [room.wallColor]);
   const lowMat = useMemo(() => new THREE.MeshStandardMaterial({ color: room.wallColor, roughness: 0.92 }), [room.wallColor]);
@@ -154,7 +169,7 @@ export function RoomMesh({ room, mode }: { room: Room; mode: ViewMode }) {
   const cam = useRef(new THREE.Vector3());
   useFrame(({ camera }) => {
     if (mode === "plan") { if (cut.some(Boolean)) setCut([]); return; }
-    cam.current.copy(camera.position).setY(0).normalize();
+    cam.current.set(camera.position.x - centre[0], 0, camera.position.z - centre[1]).normalize();
     const next = ws.map((w) => w.normal[0] * -cam.current.x + w.normal[1] * -cam.current.z > 0.25);
     if (next.length !== cut.length || next.some((v, i) => v !== cut[i])) setCut(next);
   });
@@ -162,7 +177,8 @@ export function RoomMesh({ room, mode }: { room: Room; mode: ViewMode }) {
   const SKIRT = 0.12;
   return (
     <group>
-      <FloorMesh room={room} />
+      <FloorMesh room={room} handlers={handlers} />
+      {highlight && <Line points={outline(room).concat([outline(room)[0]]).map(([x, z]) => { const [wx, wz] = toWorld(room, x, z); return [wx, 0.012, wz] as [number, number, number]; })} color="#2f6bff" lineWidth={2.5} />}
       {pieces.map((p, k) => {
         const low = cut[p.wall];
         if (low && p.y0 > SKIRT) return null;

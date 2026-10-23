@@ -6,15 +6,20 @@ import { onToast } from "./toast.ts";
 export function Toolbar() {
   const mode = useStore((s) => s.mode);
   const snap = useStore((s) => s.snap);
-  const { setMode, toggleSnap, reframe } = useStore.getState();
+  const scope = useStore((s) => s.scope);
+  const { setMode, toggleSnap, reframe, setScope, setTab } = useStore.getState();
   return (
     <div className="toolbar" role="toolbar" aria-label="View">
+      <div className="views" role="group" aria-label="Show">
+        <button type="button" aria-pressed={scope === "room"} onClick={() => { setScope("room"); setTab("furniture"); }}>Room</button>
+        <button type="button" aria-pressed={scope === "house"} onClick={() => setScope("house")}>House</button>
+      </div>
       <div className="views" role="group" aria-label="View">
         <button type="button" aria-pressed={mode === "3d"} onClick={() => setMode("3d")}>3D</button>
         <button type="button" aria-pressed={mode === "plan"} onClick={() => setMode("plan")}>Plan</button>
       </div>
       <button type="button" aria-pressed={snap} onClick={toggleSnap} title="Snap to walls and a 5 cm grid">Snap</button>
-      <button type="button" onClick={reframe}>Fit room</button>
+      <button type="button" onClick={reframe}>Fit</button>
     </div>
   );
 }
