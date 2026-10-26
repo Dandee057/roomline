@@ -253,3 +253,9 @@ button.link.danger { color: #b4232a; }
 .nudge .pad button:nth-child(4) { grid-area: 3 / 2; }
 .nudge .hint { margin: 0; }
 .links li .btn, .links li .link { margin-left: auto; }
+
+/* Room picker: a dropdown, so any number of rooms fits */
+.room-pick { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; }
+.room-pick select { flex: 1; min-width: 0; width: auto; font-weight: 600; font-size: 14px; padding: 7px 30px 7px 10px; }
+.room-pick .add { flex: none; white-space: nowrap; border: 1px dashed var(--line-strong); background: none; border-radius: 8px; padding: 7px 11px; font-weight: 600; font-size: 13px; color: var(--muted); cursor: pointer; }
+.room-pick .add:hover { background: #f1eee8; color: var(--ink); }

@@ -10,7 +10,7 @@ import { DOOR, FLOORS, WINDOW, floorArea, walls, type Floor, type Room } from ".
 import { BAY_WIDTHS, CASTOR_MAX_HEIGHT, DEPTHS, FRAMES, HEIGHTS, MAX_BAYS, MIN_BAYS, SHELVES, type FrameFinish, type ShelfMaterial } from "../shelving/config.ts";
 import { formatRand } from "../shelving/quote.ts";
 import { currentRoom, roomItems, useStore, type PanelTab } from "../store.ts";
-import { connections, isConnected, overlappingRooms, sharedWalls, type Align, type Side } from "../model/house.ts";
+import { blockedDoors, connections, isConnected, overlappingRooms, sharedWalls, type Align, type SharedWall, type Side } from "../model/house.ts";
 import { Field, NumberInput, Segmented, Stepper } from "./controls.tsx";
 import { toast } from "./toast.ts";
 
@@ -46,18 +46,20 @@ async function share(): Promise<void> {
   catch { prompt("Copy this link:", url); }
 }
 
+/** Which room you're in: a dropdown, so any number of rooms fits. */
 function RoomTabs() {
   // Strings compare by value, so this list only re-renders when a room is added, removed or renamed
-  const rooms = useStore(useShallow((s) => s.plan.rooms.map((r) => r.id + "\u0000" + r.name))).map((k) => k.split("\u0000"));
+  const rooms = useStore(useShallow((s) => s.plan.rooms.map((r) => r.id + "\u0000" + r.name + "\u0000" + floorArea(r).toFixed(1)))).map((k) => k.split("\u0000"));
   const active = useStore((s) => s.room);
   const canUndo = useStore((s) => s.past.length > 0), canRedo = useStore((s) => s.future.length > 0);
   const s = useStore.getState();
   return (
     <header className="panel-head">
-      <div className="tabs" role="tablist" aria-label="Rooms">
-        {rooms.map(([id, name]) => (
-          <button key={id} role="tab" aria-selected={id === active} type="button" onClick={() => s.setRoom(id)}>{name}</button>
-        ))}
+      <div className="room-pick">
+        <label className="sr" htmlFor="room-pick">Room</label>
+        <select id="room-pick" value={active} onChange={(e) => s.setRoom(e.target.value)} title={`${rooms.length} room${rooms.length === 1 ? "" : "s"}`}>
+          {rooms.map(([id, name, area]) => <option key={id} value={id}>{name} · {area} m²</option>)}
+        </select>
         <button type="button" className="add" onClick={() => s.addRoom()} aria-label="Add a room">+ Room</button>
       </div>
       <div className="history">
@@ -90,14 +92,17 @@ function HouseCard() {
   const conns = useMemo(() => connections(rooms), [rooms]);
   const overlaps = useMemo(() => overlappingRooms(rooms), [rooms]);
   // Walls that stand back to back between two rooms that aren't connected yet
+  // grouped by pair: an L-shaped room can share two walls with the same neighbour
   const open = useMemo(() => {
-    const seen = new Set<string>();
-    return sharedWalls(rooms).filter((w) => {
+    const pairs = new Map<string, SharedWall[]>();
+    for (const w of sharedWalls(rooms)) {
+      if (isConnected(conns, w.a, w.b)) continue;
       const k = [w.a, w.b].sort().join("|");
-      if (isConnected(conns, w.a, w.b) || seen.has(k)) return false;
-      seen.add(k); return true;
-    });
+      pairs.set(k, [...(pairs.get(k) ?? []), w]);
+    }
+    return [...pairs.values()];
   }, [rooms, conns]);
+  const blocked = useMemo(() => blockedDoors(rooms), [rooms]);
   const name = (id: string) => rooms.find((r) => r.id === id)?.name ?? "?";
   const total = rooms.reduce((a, r) => a + floorArea(r), 0);
   return (
@@ -105,8 +110,17 @@ function HouseCard() {
       <section className="section">
         <div className="fit-head"><h2 className="plain">Your house</h2><span>{rooms.length} rooms · {total.toFixed(1)} m²</span></div>
         <p className="hint">Pick a room to move it. Rooms snap together wall to wall, and a doorway on a shared wall connects them, so you can see how the house flows.</p>
-        {overlaps.length > 0 && (
-          <ul className="issues">{overlaps.map(([a, b]) => <li key={a + b} className="error"><span>{name(a)} and {name(b)} overlap. Drag one of them apart.</span></li>)}</ul>
+        {(overlaps.length > 0 || blocked.length > 0) && (
+          <ul className="issues">
+            {overlaps.map(([a, b]) => <li key={a + b} className="error"><span>{name(a)} and {name(b)} overlap. Move one of them apart.</span></li>)}
+            {blocked.map((d) => (
+              <li key={d.room + d.door} className="warning">
+                <button type="button" onClick={() => { s.setRoom(d.room); s.setTab("room"); s.setScope("room"); }}>
+                  A door in the {name(d.room).toLowerCase()} opens partly onto the {name(d.by).toLowerCase()}'s wall. Use Add doorway below to make it lead into the {name(d.by).toLowerCase()}, or click to move it.
+                </button>
+              </li>
+            ))}
+          </ul>
         )}
         <ul className="rooms">
           {rooms.map((r) => {
@@ -141,16 +155,18 @@ function HouseCard() {
         {open.length > 0 && (
           <>
             <p className="hint">{conns.length ? "These rooms share a wall too:" : "These rooms share a wall. Add a doorway to connect them:"}</p>
-            <ul className="links">{open.map((w) => (
-              <li key={w.a + w.wallA + w.b}>
+            <ul className="links">{open.map((ws) => { const w = ws[0]; return (
+              <li key={w.a + w.b}>
                 <b>{name(w.a)}</b><span aria-hidden="true">|</span><b>{name(w.b)}</b>
-                <small>{w.to - w.from} cm shared</small>
+                <small>{ws.map((x) => `${x.to - x.from} cm`).join(" and ")} shared</small>
                 <button type="button" className="btn small" onClick={() => {
-                  const into = s.connectRooms(w);
-                  toast(into ? `${name(w.a)} and ${name(w.b)} are connected. To move or resize the door, open the ${name(into).toLowerCase()} in the Room size tab.` : "There's no space left on that wall for a door.");
+                  const done = s.connectRooms(ws);
+                  toast(!done ? "There's no space left on that wall for a door. Move the room so more of the wall is shared."
+                    : done.moved ? `The ${name(done.room).toLowerCase()}'s door now opens fully onto the shared wall, so it leads into the ${name(done.room === w.a ? w.b : w.a).toLowerCase()}.`
+                    : `${name(w.a)} and ${name(w.b)} are connected. To move or resize the door, open the ${name(done.room).toLowerCase()} in the Room size tab.`);
                 }}>Add doorway</button>
               </li>
-            ))}</ul>
+            ); })}</ul>
           </>
         )}
         {!conns.length && !open.length && (

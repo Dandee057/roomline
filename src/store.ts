@@ -4,7 +4,7 @@ import { product } from "./model/catalogue.ts";
 import { check, footprint, insideRoom, overlaps } from "./model/fit.ts";
 import { DEFAULT_PLAN, decodePlan, encodePlan, newId, type Item, type Plan, type Rotation } from "./model/plan.ts";
 import { DOOR, WINDOW, normaliseRoom, walls, type Opening, type Room } from "./model/room.ts";
-import { GAP, doorwayCandidates, flipShared, houseBounds, placeBeside, type Align, type Connection, type SharedWall, type Side } from "./model/house.ts";
+import { GAP, blockedDoors, doorwayCandidates, flipShared, houseBounds, placeBeside, type Align, type Connection, type SharedWall, type Side } from "./model/house.ts";
 
 /**
  * App state: the plan (rooms and furniture), which room you're in, what's selected, and history.
@@ -41,8 +41,11 @@ interface State {
   nudgeRoom(id: string, dx: number, dz: number): void;
   /** Put a room beside another, back to back. */
   placeRoom(id: string, target: string, side: Side, align: Align): void;
-  /** Add a doorway on a shared wall. Returns the room the door was added to, or null if there's no space for one. */
-  connectRooms(sw: SharedWall): string | null;
+  /**
+   * Connect two rooms through a shared wall. A door that's already half-covered by the neighbour is slid onto
+   * the shared stretch; otherwise a new door is added. Returns which room's door it is, or null if none fits.
+   */
+  connectRooms(sw: SharedWall | SharedWall[]): { room: string; moved: boolean } | null;
   disconnectRooms(c: Connection): void;
   addRoom(): void;
   updateRoom(patch: Partial<Room>): void;
@@ -166,21 +169,36 @@ export const useStore = create<State>()((set, get) => ({
     get().apply((p) => mapRoom(p, id, (r) => ({ ...r, x, z })));
   },
   connectRooms(sw) {
-    // Try the door from either side of the wall, middle first, and both hinges: take the first spot where its
-    // swing doesn't run into furniture. If there's none, the middle of the wall on the first room's side.
     const { plan } = get(), id = newId("o");
-    const sides = [sw, flipShared(plan.rooms, sw)].filter((x): x is SharedWall => !!x);
+    const sides = (Array.isArray(sw) ? sw : [sw]).flatMap((w) => [w, flipShared(plan.rooms, w)]).filter((x): x is SharedWall => !!x);
+    if (!sides.length) return null;
+    const pair = [sides[0].a, sides[0].b];
     const errors = (r: Room) => check(r, plan.items.filter((i) => i.roomId === r.id)).issues.filter((i) => i.severity === "error").length;
-    const options = sides.flatMap((side) => doorwayCandidates(plan.rooms, side, id).map((door) => ({ room: side.a, door })));
-    const clear = ({ room, door }: { room: string; door: Opening }) => {
-      const r = plan.rooms.find((x) => x.id === room)!;
-      return errors({ ...r, openings: [...r.openings, door] }) <= errors(r);
+    const clear = (room: string, door: Opening, without?: string) => {
+      const r = plan.rooms.find((x) => x.id === room)!, others = r.openings.filter((o) => o.id !== without);
+      return errors({ ...r, openings: [...others, door] }) <= errors({ ...r, openings: others });
     };
-    const pick = options.find(clear) ?? options[0];
+    // 1. A door half-covered by the neighbour: slide it, the shortest way, fully onto the shared stretch
+    for (const d of blockedDoors(plan.rooms).filter((x) => pair.includes(x.room) && pair.includes(x.by))) {
+      const r = plan.rooms.find((x) => x.id === d.room)!, door = r.openings.find((o) => o.id === d.door)!;
+      const rooms = plan.rooms.map((x) => (x.id === r.id ? { ...x, openings: x.openings.filter((o) => o.id !== door.id) } : x));
+      const spots = sides.filter((w) => w.a === r.id && w.wallA === door.wall)
+        .flatMap((w) => doorwayCandidates(rooms, w, door.id, door.width))
+        .filter((o) => o.hinge === (door.hinge ?? "left"))
+        .sort((p, q) => Math.abs(p.offset - door.offset) - Math.abs(q.offset - door.offset));
+      const spot = spots.find((o) => clear(r.id, o, door.id)) ?? spots[0];
+      if (spot) {
+        get().apply((p) => mapRoom(p, r.id, (x) => ({ ...x, openings: x.openings.map((o) => (o.id === door.id ? { ...o, offset: spot.offset, width: spot.width } : o)) })));
+        return { room: r.id, moved: true };
+      }
+    }
+    // 2. A new door: from either side of the wall, middle first, both hinges. Take the first spot where its swing
+    //    doesn't run into furniture; if there's none, the middle of the wall on the first room's side.
+    const options = sides.flatMap((side) => doorwayCandidates(plan.rooms, side, id).map((door) => ({ room: side.a, door })));
+    const pick = options.find((o) => clear(o.room, o.door)) ?? options[0];
     if (!pick) return null;
-    const { room, door } = pick;
-    get().apply((p) => mapRoom(p, room, (r) => ({ ...r, openings: [...r.openings, door] })));
-    return room;
+    get().apply((p) => mapRoom(p, pick.room, (r) => ({ ...r, openings: [...r.openings, pick.door] })));
+    return { room: pick.room, moved: false };
   },
   disconnectRooms(c) { get().apply((p) => mapRoom(p, c.from, (r) => ({ ...r, openings: r.openings.filter((o) => o.id !== c.door) }))); },
   removeRoom(id) {

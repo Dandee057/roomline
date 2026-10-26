@@ -82,3 +82,58 @@ test("doorwayFor connects two rooms, avoiding the doors already on that wall", a
   const d3 = DEFAULT_PLAN.rooms[0].openings.find((o) => o.id === "d3")!;
   assert.ok(d2.offset + d2.width + 10 <= d3.offset || d2.offset >= d3.offset + d3.width + 10);
 });
+
+// The default bedroom is L-shaped: 420 × 380 at x 470, with a 130 × 120 notch in its bottom-right corner.
+// Its floor's notch corner is at (760, 260), so a small room fits in there, one wall gap from both inner walls.
+const nook: Room = { ...bedroom, id: "nook", name: "Nook", shape: "rect", width: 110, length: 100, openings: [], x: 2000, z: 2000 };
+
+test("L-shaped rooms: a room tucked into the notch doesn't count as overlapping", async () => {
+  const { roomsOverlap } = await import("../src/model/house.ts");
+  assert.equal(roomsOverlap({ ...nook, x: 780, z: 280 }, bedroom), false);
+  assert.equal(roomsOverlap({ ...nook, x: 770, z: 280 }, bedroom), true);  // too close to the inner wall
+  assert.equal(roomsOverlap({ ...nook, x: 700, z: 300 }, bedroom), true);  // into the bedroom's floor
+});
+
+test("L-shaped rooms: dragging snaps to the inner walls of the notch", () => {
+  const rooms = [lounge, bedroom, nook];
+  assert.deepEqual(snapRoom(rooms, "nook", 775, 290), [780, 280]);
+});
+
+test("L-shaped rooms: placing beside one tucks into the notch when it fits, and connects along the inner wall", async () => {
+  const { placeBeside, sharedWalls, doorwayFor } = await import("../src/model/house.ts");
+  const rooms = [lounge, bedroom, nook];
+  assert.deepEqual(placeBeside(rooms, "nook", "bed1", "right", "end"), [780, 280]);
+  assert.deepEqual(placeBeside(rooms, "nook", "bed1", "below", "end"), [780, 280]);
+  // aligned with the top it can't tuck in, so it goes outside the bedroom's full width
+  assert.deepEqual(placeBeside(rooms, "nook", "bed1", "right", "start"), [910, 0]);
+  const placed = rooms.map((r) => (r.id === "nook" ? { ...r, x: 780, z: 280 } : r));
+  const sw = sharedWalls(placed).filter((w) => [w.a, w.b].includes("nook"));
+  assert.equal(sw.length, 2); // both inner walls of the notch
+  const w = sw.find((x) => x.to - x.from >= 100)!;
+  const door = doorwayFor(placed, w, "n1")!;
+  const joined = placed.map((r) => (r.id === w.a ? { ...r, openings: [...r.openings, door] } : r));
+  assert.ok(connections(joined).some((c) => [c.from, c.to].includes("nook")));
+});
+
+test("L-shaped rooms: a room too big for the notch lines up with the outer wall instead, with room for a door", async () => {
+  const { placeBeside, sharedWalls } = await import("../src/model/house.ts");
+  const big: Room = { ...nook, width: 150, length: 150 };
+  const rooms = [lounge, bedroom, big];
+  const [x, z] = placeBeside(rooms, "nook", "bed1", "right", "end");
+  assert.deepEqual([x, z], [910, 110]); // flush with the bottom of the bedroom's right wall (z 0–260)
+  const placed = rooms.map((r) => (r.id === "nook" ? { ...r, x, z } : r));
+  assert.ok(sharedWalls(placed).some((w) => [w.a, w.b].includes("nook") && w.to - w.from === 150));
+});
+
+test("a door that opens partly onto a neighbour's wall is flagged; a full doorway isn't", async () => {
+  const { blockedDoors, placeBeside } = await import("../src/model/house.ts");
+  assert.deepEqual(blockedDoors(DEFAULT_PLAN.rooms), []);
+  // A bigger corner on the bedroom, and an en-suite tucked into it: it covers part of the bedroom's door d2
+  const bed = { ...bedroom, notchW: 200, notchL: 190 };
+  const suite: Room = { ...nook, id: "suite", width: 170, length: 160 };
+  const rooms = [lounge, bed, suite];
+  const placed = rooms.map((r) => (r.id === "suite" ? { ...r, x: 710, z: 220 } : r));
+  assert.deepEqual(blockedDoors(placed), [{ room: "bed1", door: "d2", by: "suite" }]);
+  // placing it "right, bottom" still tucks it into the corner, as asked: the half-covered door is flagged instead
+  assert.deepEqual(placeBeside(rooms, "suite", "bed1", "right", "end"), [710, 220]);
+});

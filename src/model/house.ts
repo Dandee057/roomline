@@ -19,21 +19,42 @@ export function houseBounds(rooms: Room[]): Box {
   return { x0: Math.min(...bs.map((b) => b.x0)), z0: Math.min(...bs.map((b) => b.z0)), x1: Math.max(...bs.map((b) => b.x1)), z1: Math.max(...bs.map((b) => b.z1)) };
 }
 
+/** A room's floor as rectangles on the house plan: one for a rectangle, two for an L (its notch is bottom right). */
+export function roomRects(r: Room, x = r.x, z = r.z): Box[] {
+  if (r.shape === "rect") return [{ x0: x, z0: z, x1: x + r.width, z1: z + r.length }];
+  return [
+    { x0: x, z0: z, x1: x + r.width, z1: z + r.length - r.notchL },
+    { x0: x, z0: z + r.length - r.notchL, x1: x + r.width - r.notchW, z1: z + r.length }
+  ];
+}
+
+/** Whether two rooms' floors, with their walls, would overlap if room a stood at (x, z). */
+export function roomsOverlap(a: Room, b: Room, x = a.x, z = a.z): boolean {
+  return roomRects(a, x, z).some((p) => roomRects(b).some((q) =>
+    Math.min(p.x1, q.x1) - Math.max(p.x0, q.x0) + GAP > 1 && Math.min(p.z1, q.z1) - Math.max(p.z0, q.z0) + GAP > 1));
+}
+
 /**
- * Where a room ends up when dropped at (x, z): each axis snaps to the nearest neighbour edge (back to back at the
- * wall gap, or lined up flush) within SNAP cm.
+ * Where a room ends up when dropped at (x, z). Each axis snaps, within SNAP cm, to the nearest position where one
+ * of its walls stands back to back with a neighbour's wall (one wall gap apart) or lines up flush with one. It
+ * uses the real walls, so a room can tuck into the corner of an L-shaped neighbour.
  */
 export function snapRoom(rooms: Room[], id: string, x: number, z: number): [number, number] {
-  const me = rooms.find((r) => r.id === id)!;
-  const W = me.width, L = me.length;
+  const me = rooms.find((r) => r.id === id)!, mine = walls(me);
   let bestX: [number, number] = [Infinity, x], bestZ: [number, number] = [Infinity, z];
   const tryX = (nx: number) => { const d = Math.abs(nx - x); if (d < SNAP && d < bestX[0]) bestX = [d, nx]; };
   const tryZ = (nz: number) => { const d = Math.abs(nz - z); if (d < SNAP && d < bestZ[0]) bestZ = [d, nz]; };
   for (const o of rooms) {
     if (o.id === id) continue;
-    const b = roomBox(o);
-    tryX(b.x1 + GAP); tryX(b.x0 - GAP - W); tryX(b.x0); tryX(b.x1 - W);
-    tryZ(b.z1 + GAP); tryZ(b.z0 - GAP - L); tryZ(b.z0); tryZ(b.z1 - L);
+    for (const w of walls(o)) for (const m of mine) {
+      if (w.normal[0] !== 0 && m.normal[0] !== 0) { // walls running down the page
+        const X = o.x + w.a[0];
+        if (m.normal[0] === -w.normal[0]) tryX(X - w.normal[0] * GAP - m.a[0]); else tryX(X - m.a[0]);
+      } else if (w.normal[1] !== 0 && m.normal[1] !== 0) { // walls running across
+        const Z = o.z + w.a[1];
+        if (m.normal[1] === -w.normal[1]) tryZ(Z - w.normal[1] * GAP - m.a[1]); else tryZ(Z - m.a[1]);
+      }
+    }
   }
   return [Math.round(bestX[1]), Math.round(bestZ[1])];
 }
@@ -42,9 +63,7 @@ export function snapRoom(rooms: Room[], id: string, x: number, z: number): [numb
 export function overlappingRooms(rooms: Room[]): [string, string][] {
   const out: [string, string][] = [];
   for (let i = 0; i < rooms.length; i++) for (let j = i + 1; j < rooms.length; j++) {
-    const a = roomBox(rooms[i]), b = roomBox(rooms[j]);
-    const ox = Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0) + GAP, oz = Math.min(a.z1, b.z1) - Math.max(a.z0, b.z0) + GAP;
-    if (ox > 1 && oz > 1) out.push([rooms[i].id, rooms[j].id]);
+    if (roomsOverlap(rooms[i], rooms[j])) out.push([rooms[i].id, rooms[j].id]);
   }
   return out;
 }
@@ -99,25 +118,59 @@ export function arrangeInRow(rooms: Room[]): Room[] {
 export type Side = "left" | "right" | "above" | "below";
 export type Align = "start" | "centre" | "end";
 
-/** Where room `id` goes to sit on `side` of room `target`, back to back, lined up at the start, centre or end. */
+const DIRS: Record<Side, [number, number]> = { right: [1, 0], left: [-1, 0], below: [0, 1], above: [0, -1] };
+
+/**
+ * Where room `id` goes to sit on `side` of room `target`, back to back. The target's walls on that side are tried
+ * in turn (an L-shaped room has two: its outer wall and the inner wall of its corner), starting with the one at
+ * the chosen end ("start" is the top or left), and the room is lined up with that wall's start, centre or end.
+ * The first wall where it doesn't land on another room and shares enough wall for a door wins (a half-covered
+ * door on it is flagged separately, so you can move the door); failing that, anywhere it at least touches.
+ */
 export function placeBeside(rooms: Room[], id: string, target: string, side: Side, align: Align = "start"): [number, number] {
-  const me = rooms.find((r) => r.id === id)!, t = roomBox(rooms.find((r) => r.id === target)!);
-  const line = (lo: number, hi: number, size: number) => Math.round(align === "start" ? lo : align === "end" ? hi - size : lo + (hi - lo - size) / 2);
-  switch (side) {
-    case "right": return [t.x1 + GAP, line(t.z0, t.z1, me.length)];
-    case "left": return [t.x0 - GAP - me.width, line(t.z0, t.z1, me.length)];
-    case "below": return [line(t.x0, t.x1, me.width), t.z1 + GAP];
-    case "above": return [line(t.x0, t.x1, me.width), t.z0 - GAP - me.length];
-  }
+  const me = rooms.find((r) => r.id === id)!, tr = rooms.find((r) => r.id === target)!, t = roomBox(tr);
+  const [dx, dz] = DIRS[side], across = dx !== 0;
+  const n = across ? 0 : 1, a = 1 - n;          // normal axis, and the axis along the wall
+  const size = across ? me.length : me.width, origin = [tr.x, tr.z];
+  const at = (v: number, u: number): [number, number] => (across ? [v, u] : [u, v]);
+  const line = (lo: number, hi: number) => Math.round(align === "start" ? lo : align === "end" ? hi - size : lo + (hi - lo - size) / 2);
+  // The target's walls facing this side, as stretches along the wall axis on the house plan
+  const faces = walls(tr).filter((w) => w.normal[0] === -dx && w.normal[1] === -dz).map((w) => ({
+    pos: origin[n] + w.a[n], lo: origin[a] + Math.min(w.a[a], w.b[a]), hi: origin[a] + Math.max(w.a[a], w.b[a])
+  }));
+  const box = across ? [t.z0, t.z1] : [t.x0, t.x1], mid = (box[0] + box[1]) / 2;
+  faces.sort((p, q) => align === "start" ? p.lo - q.lo : align === "end" ? q.hi - p.hi : Math.abs((p.lo + p.hi) / 2 - mid) - Math.abs((q.lo + q.hi) / 2 - mid));
+  // My walls that face the target, for where my floor starts relative to them
+  const mine = walls(me).filter((m) => m.normal[0] === dx && m.normal[1] === dz).map((m) => m.a[n]);
+  const others = rooms.filter((r) => r.id !== id);
+  const blockedBefore = blockedDoors(rooms).length;
+  const fits = (pos: [number, number], need: number, keepDoorsClear = false) => {
+    const placed = { ...me, x: pos[0], z: pos[1] };
+    if (others.some((o) => roomsOverlap(placed, o)) || sharedWalls([placed, tr], need).length === 0) return false;
+    return !keepDoorsClear || blockedDoors(rooms.map((r) => (r.id === id ? placed : r))).length <= blockedBefore;
+  };
+  const groups: [number, number][][] = faces.map((f) => {
+    const u = line(f.lo, f.hi);
+    // closest to the target first
+    const vs = [...new Set(mine.map((m) => Math.round(f.pos + (across ? dx : dz) * GAP - m)))].sort((p, q) => (p - q) * (across ? dx : dz));
+    return vs.map((v) => at(v, u));
+  });
+  const outer = side === "right" ? t.x1 + GAP : side === "left" ? t.x0 - GAP - me.width : side === "below" ? t.z1 + GAP : t.z0 - GAP - me.length;
+  groups.push([at(outer, line(box[0], box[1]))]);
+  const door = DOOR.min + 2 * OPENING_MARGIN;
+  // The first wall (in the chosen order) with room for a door wins; along it, prefer a spot that doesn't
+  // half-cover an existing door. Failing all that, anywhere that at least touches.
+  for (const g of groups) { const p = g.find((q) => fits(q, door, true)) ?? g.find((q) => fits(q, door)); if (p) return p; }
+  const all = groups.flat();
+  return all.find((q) => fits(q, 1)) ?? all[all.length - 1];
 }
 
 /** Two rooms standing back to back: the stretch of room a's wall that faces room b's, in a's wall coordinates. */
 export interface SharedWall { a: string; wallA: number; b: string; wallB: number; from: number; to: number }
 
 /** Every pair of walls that stand back to back with enough shared length for a door. */
-export function sharedWalls(rooms: Room[]): SharedWall[] {
+export function sharedWalls(rooms: Room[], need = DOOR.min + 2 * OPENING_MARGIN): SharedWall[] {
   const out: SharedWall[] = [];
-  const need = DOOR.min + 2 * OPENING_MARGIN;
   for (let i = 0; i < rooms.length; i++) for (let j = i + 1; j < rooms.length; j++) {
     const a = rooms[i], b = rooms[j];
     walls(a).forEach((v, wa) => {
@@ -175,3 +228,35 @@ export function flipShared(rooms: Room[], sw: SharedWall): SharedWall | undefine
 
 /** Whether two rooms already have a doorway between them. */
 export const isConnected = (conns: Connection[], a: string, b: string) => conns.some((c) => (c.from === a && c.to === b) || (c.from === b && c.to === a));
+
+/**
+ * Doors that open partly onto a neighbouring room's wall: neither a doorway into that room nor clear of it.
+ * Returns the room with the door and the neighbour in the way.
+ */
+export function blockedDoors(rooms: Room[]): { room: string; door: string; by: string }[] {
+  const out: { room: string; door: string; by: string }[] = [];
+  const linked = new Set(connections(rooms).map((c) => c.from + "|" + c.door));
+  for (const a of rooms) {
+    const wa = walls(a);
+    for (const door of a.openings.filter((o) => o.kind === "door")) {
+      if (linked.has(a.id + "|" + door.id)) continue;
+      const w = wa[door.wall], t = [(w.b[0] - w.a[0]) / w.length, (w.b[1] - w.a[1]) / w.length];
+      // the door's span pushed out through both walls, as an interval along the wall's direction
+      const p0 = [a.x + w.a[0] + t[0] * door.offset - w.normal[0] * GAP, a.z + w.a[1] + t[1] * door.offset - w.normal[1] * GAP];
+      const s0 = 0, s1 = door.width;
+      for (const b of rooms) {
+        if (b.id === a.id) continue;
+        const hit = walls(b).some((v) => {
+          if (v.normal[0] !== -w.normal[0] || v.normal[1] !== -w.normal[1]) return false;
+          const va = [b.x + v.a[0], b.z + v.a[1]], vb = [b.x + v.b[0], b.z + v.b[1]];
+          if (Math.abs((va[0] - p0[0]) * w.normal[0] + (va[1] - p0[1]) * w.normal[1]) > 3) return false; // not on that line
+          const along = (q: number[]) => (q[0] - p0[0]) * t[0] + (q[1] - p0[1]) * t[1];
+          const lo = Math.min(along(va), along(vb)), hi = Math.max(along(va), along(vb));
+          return Math.min(hi, s1) - Math.max(lo, s0) > 1;
+        });
+        if (hit) { out.push({ room: a.id, door: door.id, by: b.id }); break; }
+      }
+    }
+  }
+  return out;
+}
