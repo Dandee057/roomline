@@ -1,10 +1,10 @@
 import { create } from "zustand";
 import { DEFAULT_CONFIG, normalise as normaliseShelving, type Config as ShelvingConfig } from "./shelving/config.ts";
 import { product } from "./model/catalogue.ts";
-import { footprint, insideRoom, overlaps } from "./model/fit.ts";
+import { check, footprint, insideRoom, overlaps } from "./model/fit.ts";
 import { DEFAULT_PLAN, decodePlan, encodePlan, newId, type Item, type Plan, type Rotation } from "./model/plan.ts";
 import { DOOR, WINDOW, normaliseRoom, walls, type Opening, type Room } from "./model/room.ts";
-import { GAP, houseBounds } from "./model/house.ts";
+import { GAP, doorwayCandidates, flipShared, houseBounds, placeBeside, type Align, type Connection, type SharedWall, type Side } from "./model/house.ts";
 
 /**
  * App state: the plan (rooms and furniture), which room you're in, what's selected, and history.
@@ -37,6 +37,13 @@ interface State {
   /** The catalogue changed: give every item a new identity so sizes, models and checks update. No undo step. */
   refreshProducts(): void;
   moveRoom(id: string, x: number, z: number): void;
+  /** Arrow keys and buttons in the house view: a run of nudges on one room is a single undo step. */
+  nudgeRoom(id: string, dx: number, dz: number): void;
+  /** Put a room beside another, back to back. */
+  placeRoom(id: string, target: string, side: Side, align: Align): void;
+  /** Add a doorway on a shared wall. Returns the room the door was added to, or null if there's no space for one. */
+  connectRooms(sw: SharedWall): string | null;
+  disconnectRooms(c: Connection): void;
   addRoom(): void;
   updateRoom(patch: Partial<Room>): void;
   removeRoom(id: string): void;
@@ -148,6 +155,34 @@ export const useStore = create<State>()((set, get) => ({
     if (get().dragging) set((s) => ({ plan: f(s.plan) })); else get().apply(f);
   },
   updateRoom(patch) { get().apply((p) => mapRoom(p, get().room, (r) => ({ ...r, ...patch }))); },
+  nudgeRoom(id, dx, dz) {
+    const f = (p: Plan) => mapRoom(p, id, (r) => ({ ...r, x: r.x + dx, z: r.z + dz }));
+    const now = Date.now(), key = "room:" + id, joined = lastNudge?.id === key && now - lastNudge.at < 1500 && get().past.length > 0;
+    lastNudge = { id: key, at: now };
+    if (joined) set((s) => ({ plan: tidy(f(s.plan)), future: [] })); else get().apply(f);
+  },
+  placeRoom(id, target, side, align) {
+    const [x, z] = placeBeside(get().plan.rooms, id, target, side, align);
+    get().apply((p) => mapRoom(p, id, (r) => ({ ...r, x, z })));
+  },
+  connectRooms(sw) {
+    // Try the door from either side of the wall, middle first, and both hinges: take the first spot where its
+    // swing doesn't run into furniture. If there's none, the middle of the wall on the first room's side.
+    const { plan } = get(), id = newId("o");
+    const sides = [sw, flipShared(plan.rooms, sw)].filter((x): x is SharedWall => !!x);
+    const errors = (r: Room) => check(r, plan.items.filter((i) => i.roomId === r.id)).issues.filter((i) => i.severity === "error").length;
+    const options = sides.flatMap((side) => doorwayCandidates(plan.rooms, side, id).map((door) => ({ room: side.a, door })));
+    const clear = ({ room, door }: { room: string; door: Opening }) => {
+      const r = plan.rooms.find((x) => x.id === room)!;
+      return errors({ ...r, openings: [...r.openings, door] }) <= errors(r);
+    };
+    const pick = options.find(clear) ?? options[0];
+    if (!pick) return null;
+    const { room, door } = pick;
+    get().apply((p) => mapRoom(p, room, (r) => ({ ...r, openings: [...r.openings, door] })));
+    return room;
+  },
+  disconnectRooms(c) { get().apply((p) => mapRoom(p, c.from, (r) => ({ ...r, openings: r.openings.filter((o) => o.id !== c.door) }))); },
   removeRoom(id) {
     const { plan } = get();
     if (plan.rooms.length < 2) return;

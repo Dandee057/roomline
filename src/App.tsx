@@ -25,6 +25,11 @@ export function App() {
       const s = useStore.getState(), mod = e.ctrlKey || e.metaKey, key = e.key.toLowerCase();
       if (mod && key === "z") { e.preventDefault(); if (e.shiftKey) s.redo(); else s.undo(); return; }
       if (mod && key === "y") { e.preventDefault(); s.redo(); return; }
+      // In the house view the arrow keys move the chosen room, 10 cm at a time (Shift: 1 cm)
+      if (s.scope === "house" && key.startsWith("arrow")) {
+        const d = e.shiftKey ? 1 : 10, m: Record<string, [number, number]> = { arrowleft: [-d, 0], arrowright: [d, 0], arrowup: [0, -d], arrowdown: [0, d] };
+        e.preventDefault(); s.nudgeRoom(s.room, ...m[key]); return;
+      }
       const id = s.selected, it = id ? s.plan.items.find((i) => i.id === id) : null;
       if (!it) return;
       const step = e.shiftKey ? 1 : 5;

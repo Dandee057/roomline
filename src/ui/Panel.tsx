@@ -10,7 +10,7 @@ import { DOOR, FLOORS, WINDOW, floorArea, walls, type Floor, type Room } from ".
 import { BAY_WIDTHS, CASTOR_MAX_HEIGHT, DEPTHS, FRAMES, HEIGHTS, MAX_BAYS, MIN_BAYS, SHELVES, type FrameFinish, type ShelfMaterial } from "../shelving/config.ts";
 import { formatRand } from "../shelving/quote.ts";
 import { currentRoom, roomItems, useStore, type PanelTab } from "../store.ts";
-import { connections, overlappingRooms } from "../model/house.ts";
+import { connections, isConnected, overlappingRooms, sharedWalls, type Align, type Side } from "../model/house.ts";
 import { Field, NumberInput, Segmented, Stepper } from "./controls.tsx";
 import { toast } from "./toast.ts";
 
@@ -89,13 +89,22 @@ function HouseCard() {
   const s = useStore.getState();
   const conns = useMemo(() => connections(rooms), [rooms]);
   const overlaps = useMemo(() => overlappingRooms(rooms), [rooms]);
+  // Walls that stand back to back between two rooms that aren't connected yet
+  const open = useMemo(() => {
+    const seen = new Set<string>();
+    return sharedWalls(rooms).filter((w) => {
+      const k = [w.a, w.b].sort().join("|");
+      if (isConnected(conns, w.a, w.b) || seen.has(k)) return false;
+      seen.add(k); return true;
+    });
+  }, [rooms, conns]);
   const name = (id: string) => rooms.find((r) => r.id === id)?.name ?? "?";
   const total = rooms.reduce((a, r) => a + floorArea(r), 0);
   return (
     <>
       <section className="section">
         <div className="fit-head"><h2 className="plain">Your house</h2><span>{rooms.length} rooms · {total.toFixed(1)} m²</span></div>
-        <p className="hint">Drag a room's floor to move it. Rooms snap together wall to wall. A door on a shared wall becomes a doorway into the next room, so you can see how the house flows.</p>
+        <p className="hint">Pick a room to move it. Rooms snap together wall to wall, and a doorway on a shared wall connects them, so you can see how the house flows.</p>
         {overlaps.length > 0 && (
           <ul className="issues">{overlaps.map(([a, b]) => <li key={a + b} className="error"><span>{name(a)} and {name(b)} overlap. Drag one of them apart.</span></li>)}</ul>
         )}
@@ -105,7 +114,7 @@ function HouseCard() {
             const bad = rep.issues.filter((i) => i.severity === "error").length, meh = rep.issues.filter((i) => i.severity === "warning").length;
             return (
               <li key={r.id} className={r.id === current ? "on" : undefined}>
-                <button type="button" onClick={() => s.setRoom(r.id)}>
+                <button type="button" onClick={() => s.setRoom(r.id)} aria-pressed={r.id === current}>
                   <b>{r.name}</b>
                   <small>{r.width} × {r.length} cm{r.shape === "L" ? ", L-shaped" : ""} · {n} piece{n === 1 ? "" : "s"}</small>
                 </button>
@@ -117,15 +126,84 @@ function HouseCard() {
         </ul>
         <button type="button" className="btn" onClick={() => s.addRoom()}>+ Add a room</button>
       </section>
+      {rooms.length > 1 && <MoveRoom key={current} />}
       <section className="section">
         <h2>How the rooms connect</h2>
-        {conns.length ? (
-          <ul className="links">{conns.map((c) => <li key={c.passage.id}><b>{name(c.from)}</b><span aria-hidden="true">⇄</span><b>{name(c.to)}</b><small>through a {Math.round(c.passage.width)} cm doorway</small></li>)}</ul>
-        ) : (
-          <p className="hint">No rooms are connected yet. Put two rooms wall to wall, then add a door on the shared wall in the Room size tab.</p>
+        {conns.length > 0 && (
+          <ul className="links">{conns.map((c) => (
+            <li key={c.passage.id}>
+              <b>{name(c.from)}</b><span aria-hidden="true">⇄</span><b>{name(c.to)}</b>
+              <small>{Math.round(c.passage.width)} cm doorway</small>
+              <button type="button" className="link" onClick={() => { s.disconnectRooms(c); toast("Doorway removed."); }}>Remove</button>
+            </li>
+          ))}</ul>
+        )}
+        {open.length > 0 && (
+          <>
+            <p className="hint">{conns.length ? "These rooms share a wall too:" : "These rooms share a wall. Add a doorway to connect them:"}</p>
+            <ul className="links">{open.map((w) => (
+              <li key={w.a + w.wallA + w.b}>
+                <b>{name(w.a)}</b><span aria-hidden="true">|</span><b>{name(w.b)}</b>
+                <small>{w.to - w.from} cm shared</small>
+                <button type="button" className="btn small" onClick={() => {
+                  const into = s.connectRooms(w);
+                  toast(into ? `${name(w.a)} and ${name(w.b)} are connected. To move or resize the door, open the ${name(into).toLowerCase()} in the Room size tab.` : "There's no space left on that wall for a door.");
+                }}>Add doorway</button>
+              </li>
+            ))}</ul>
+          </>
+        )}
+        {!conns.length && !open.length && (
+          <p className="hint">No rooms share a wall yet. Move a room next to another (above, or drag its floor), then add a doorway between them.</p>
         )}
       </section>
     </>
+  );
+}
+
+const SIDES: [Side, string][] = [["right", "to the right of"], ["left", "to the left of"], ["above", "above"], ["below", "below"]];
+
+/** Moving the selected room: beside another room in one click, or step by step. */
+function MoveRoom() {
+  const rooms = useStore((s) => s.plan.rooms);
+  const id = useStore((s) => s.room);
+  const me = rooms.find((r) => r.id === id)!;
+  const others = rooms.filter((r) => r.id !== id);
+  const [target, setTarget] = useState(others[0]?.id ?? "");
+  const [side, setSide] = useState<Side>("right");
+  const [align, setAlign] = useState<Align>("start");
+  const s = useStore.getState();
+  const t = others.find((r) => r.id === target) ?? others[0];
+  if (!t) return null;
+  const across = side === "left" || side === "right";
+  const step = (dx: number, dz: number) => s.nudgeRoom(id, dx, dz);
+  return (
+    <section className="section move-room">
+      <h2>Move the {me.name.toLowerCase()}</h2>
+      <div className="place-row">
+        <span>Put it</span>
+        <select aria-label="Side" value={side} onChange={(e) => setSide(e.target.value as Side)}>
+          {SIDES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+        </select>
+        <select aria-label="Next to which room" value={t.id} onChange={(e) => setTarget(e.target.value)}>
+          {others.map((r) => <option key={r.id} value={r.id}>the {r.name.toLowerCase()}</option>)}
+        </select>
+      </div>
+      <Field label="Line it up with its">
+        <Segmented label="Line up" value={align} onChange={setAlign}
+          choices={[{ value: "start", label: across ? "Top" : "Left" }, { value: "centre", label: "Middle" }, { value: "end", label: across ? "Bottom" : "Right" }]} />
+      </Field>
+      <button type="button" className="btn primary" onClick={() => { s.placeRoom(id, t.id, side, align); toast(`The ${me.name.toLowerCase()} is now ${SIDES.find(([v]) => v === side)![1]} the ${t.name.toLowerCase()}.`); }}>Place it</button>
+      <div className="nudge">
+        <div className="pad" role="group" aria-label="Move 10 cm">
+          <button type="button" className="icon" aria-label="Move up 10 cm" onClick={() => step(0, -10)}>↑</button>
+          <button type="button" className="icon" aria-label="Move left 10 cm" onClick={() => step(-10, 0)}>←</button>
+          <button type="button" className="icon" aria-label="Move right 10 cm" onClick={() => step(10, 0)}>→</button>
+          <button type="button" className="icon" aria-label="Move down 10 cm" onClick={() => step(0, 10)}>↓</button>
+        </div>
+        <p className="hint">Fine-tune 10 cm at a time, or use the arrow keys (Shift: 1 cm). You can also drag the room's floor; it snaps to its neighbours.</p>
+      </div>
+    </section>
   );
 }
 

@@ -118,7 +118,8 @@ button.link:disabled { color: var(--muted); cursor: default; }
 
 /* Room tabs */
 .panel-head { align-items: center; padding: 12px 16px; }
-.tabs { display: flex; gap: 4px; flex-wrap: wrap; min-width: 0; }
+.tabs { display: flex; gap: 4px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.tabs button { flex: none; white-space: nowrap; }
 .tabs button { border: 1px solid transparent; background: none; border-radius: 8px; padding: 7px 11px; font-weight: 600; font-size: 13px; cursor: pointer; color: var(--muted); }
 .tabs button[aria-selected="true"] { background: var(--ink); color: var(--paper); }
 .tabs button:hover:not([aria-selected="true"]) { background: #f1eee8; color: var(--ink); }
@@ -196,7 +197,9 @@ button.link.danger { color: #b4232a; }
 .links { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
 .links li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; font-size: 13px; }
 .links span { color: var(--accent); }
-.links small { flex-basis: 100%; color: var(--muted); font-size: 12px; }
+.links small { color: var(--muted); font-size: 12px; }
+.links li { padding: 6px 0; border-bottom: 1px solid var(--line); align-items: center; }
+.links li:last-child { border-bottom: 0; }
 
 /* Phones and small tablets: the model on top, the panel scrolls beneath it */
 @media (max-width: 860px) {
@@ -236,3 +239,17 @@ button.link.danger { color: #b4232a; }
 .color-row input[type="color"] { width: 40px; height: 32px; padding: 0; border: 1px solid var(--line-strong); border-radius: 8px; background: none; }
 .color-row code { font-size: 12px; color: var(--muted); }
 .danger-zone { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+
+/* House: moving rooms and connecting them */
+.move-room { display: grid; gap: 12px; }
+.move-room h2 { margin: 0; }
+.place-row { display: grid; grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr); gap: 8px; align-items: center; font-size: 13px; }
+.nudge { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 12px; align-items: center; }
+.nudge .pad { display: grid; grid-template-columns: repeat(3, 30px); grid-template-rows: repeat(3, 30px); gap: 2px; }
+.nudge .pad button { width: 30px; height: 30px; }
+.nudge .pad button:nth-child(1) { grid-area: 1 / 2; }
+.nudge .pad button:nth-child(2) { grid-area: 2 / 1; }
+.nudge .pad button:nth-child(3) { grid-area: 2 / 3; }
+.nudge .pad button:nth-child(4) { grid-area: 3 / 2; }
+.nudge .hint { margin: 0; }
+.links li .btn, .links li .link { margin-left: auto; }

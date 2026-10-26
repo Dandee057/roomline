@@ -1,4 +1,4 @@
-import { walls, type Opening, type Room } from "./room.ts";
+import { DOOR, OPENING_MARGIN, walls, type Opening, type Room } from "./room.ts";
 
 /**
  * The house: rooms placed on one plan (cm), each by its top-left floor corner. Walls are 10 cm thick and stand
@@ -93,3 +93,85 @@ export function arrangeInRow(rooms: Room[]): Room[] {
   let x = 0;
   return rooms.map((r) => { const placed = { ...r, x, z: 0 }; x += r.width + GAP; return placed; });
 }
+
+/* ---------- Placing rooms by hand and connecting them ---------- */
+
+export type Side = "left" | "right" | "above" | "below";
+export type Align = "start" | "centre" | "end";
+
+/** Where room `id` goes to sit on `side` of room `target`, back to back, lined up at the start, centre or end. */
+export function placeBeside(rooms: Room[], id: string, target: string, side: Side, align: Align = "start"): [number, number] {
+  const me = rooms.find((r) => r.id === id)!, t = roomBox(rooms.find((r) => r.id === target)!);
+  const line = (lo: number, hi: number, size: number) => Math.round(align === "start" ? lo : align === "end" ? hi - size : lo + (hi - lo - size) / 2);
+  switch (side) {
+    case "right": return [t.x1 + GAP, line(t.z0, t.z1, me.length)];
+    case "left": return [t.x0 - GAP - me.width, line(t.z0, t.z1, me.length)];
+    case "below": return [line(t.x0, t.x1, me.width), t.z1 + GAP];
+    case "above": return [line(t.x0, t.x1, me.width), t.z0 - GAP - me.length];
+  }
+}
+
+/** Two rooms standing back to back: the stretch of room a's wall that faces room b's, in a's wall coordinates. */
+export interface SharedWall { a: string; wallA: number; b: string; wallB: number; from: number; to: number }
+
+/** Every pair of walls that stand back to back with enough shared length for a door. */
+export function sharedWalls(rooms: Room[]): SharedWall[] {
+  const out: SharedWall[] = [];
+  const need = DOOR.min + 2 * OPENING_MARGIN;
+  for (let i = 0; i < rooms.length; i++) for (let j = i + 1; j < rooms.length; j++) {
+    const a = rooms[i], b = rooms[j];
+    walls(a).forEach((v, wa) => {
+      const tv = [(v.b[0] - v.a[0]) / v.length, (v.b[1] - v.a[1]) / v.length], A0 = [a.x + v.a[0], a.z + v.a[1]];
+      walls(b).forEach((u, wb) => {
+        if (Math.abs(u.normal[0] + v.normal[0]) > 1e-6 || Math.abs(u.normal[1] + v.normal[1]) > 1e-6) return;
+        const B0 = [b.x + u.a[0], b.z + u.a[1]], B1 = [b.x + u.b[0], b.z + u.b[1]];
+        // b's wall must be one wall-gap outside a's, on the far side
+        const out_ = (P: number[]) => -((P[0] - A0[0]) * v.normal[0] + (P[1] - A0[1]) * v.normal[1]);
+        if (Math.abs(out_(B0) - GAP) > 3) return;
+        const along = (P: number[]) => (P[0] - A0[0]) * tv[0] + (P[1] - A0[1]) * tv[1];
+        const from = Math.max(0, Math.min(along(B0), along(B1))), to = Math.min(v.length, Math.max(along(B0), along(B1)));
+        if (to - from >= need) out.push({ a: a.id, wallA: wa, b: b.id, wallB: wb, from: Math.round(from), to: Math.round(to) });
+      });
+    });
+  }
+  return out;
+}
+
+/**
+ * Where a new door for room a could go on a shared wall, best first: as near the middle of the shared stretch as
+ * it fits, without running into a door or window on either side of the wall.
+ */
+export function doorwayCandidates(rooms: Room[], sw: SharedWall, id: string, width = DOOR.default): Opening[] {
+  const a = rooms.find((r) => r.id === sw.a)!, b = rooms.find((r) => r.id === sw.b)!;
+  const lo = sw.from + OPENING_MARGIN, hi = sw.to - OPENING_MARGIN;
+  width = Math.min(width, hi - lo);
+  if (width < DOOR.min) return [];
+  // what's already on this stretch, in a's wall coordinates: a's own openings, and b's mapped across
+  const taken: [number, number][] = a.openings.filter((o) => o.wall === sw.wallA).map((o) => [o.offset, o.offset + o.width]);
+  const v = walls(a)[sw.wallA], u = walls(b)[sw.wallB];
+  const tv = [(v.b[0] - v.a[0]) / v.length, (v.b[1] - v.a[1]) / v.length], A0 = [a.x + v.a[0], a.z + v.a[1]];
+  const tu = [(u.b[0] - u.a[0]) / u.length, (u.b[1] - u.a[1]) / u.length], B0 = [b.x + u.a[0], b.z + u.a[1]];
+  const map = (s: number) => (B0[0] + tu[0] * s - A0[0]) * tv[0] + (B0[1] + tu[1] * s - A0[1]) * tv[1];
+  for (const o of b.openings.filter((o) => o.wall === sw.wallB)) { const p = map(o.offset), q = map(o.offset + o.width); taken.push([Math.min(p, q), Math.max(p, q)]); }
+  const free = (s: number) => taken.every(([x0, x1]) => s + width + OPENING_MARGIN <= x0 || s >= x1 + OPENING_MARGIN);
+  const mid = Math.round((lo + hi - width) / 2), out: Opening[] = [], seen = new Set<number>();
+  for (let d = 0; d <= hi - lo; d += 10) for (const s of [mid - d, mid + d]) {
+    if (s < lo || s + width > hi || seen.has(s) || !free(s)) continue;
+    seen.add(s);
+    for (const hinge of ["left", "right"] as const) out.push({ id, kind: "door", wall: sw.wallA, offset: s, width, hinge });
+  }
+  return out;
+}
+
+/** The best place for a new door for room a on a shared wall, or null if there's no space for one. */
+export const doorwayFor = (rooms: Room[], sw: SharedWall, id: string, width = DOOR.default): Opening | null =>
+  doorwayCandidates(rooms, sw, id, width)[0] ?? null;
+
+/** The same shared wall, seen from room b's side. */
+export function flipShared(rooms: Room[], sw: SharedWall): SharedWall | undefined {
+  const a = rooms.find((r) => r.id === sw.a)!, b = rooms.find((r) => r.id === sw.b)!;
+  return sharedWalls([b, a]).find((x) => x.wallA === sw.wallB && x.wallB === sw.wallA);
+}
+
+/** Whether two rooms already have a doorway between them. */
+export const isConnected = (conns: Connection[], a: string, b: string) => conns.some((c) => (c.from === a && c.to === b) || (c.from === b && c.to === a));

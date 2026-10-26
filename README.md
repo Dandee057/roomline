@@ -12,7 +12,7 @@ Built with **React 19**, **React Three Fiber**, **drei**, **zustand**, **TypeScr
 ## What it does
 
 - **Rooms:** rectangular or L-shaped rooms to your own measurements, in a *Room size* tab: width and length, the cut-out of an L, doors (with hinge side), windows, floor and wall colour. The plan view labels every wall with its length.
-- **The whole house:** the *House* view lays your rooms out together. Drag a room and it snaps wall to wall with its neighbours; a door on a shared wall opens a doorway into the next room, so you can walk through the house in 3D and see how it flows. The panel lists every connection and flags rooms that overlap.
+- **The whole house:** the *House* view lays your rooms out together. Put a room beside another in one click ("below the lounge, lined up in the middle"), fine-tune it with the arrow buttons or keys, or drag its floor; it snaps wall to wall with its neighbours. Rooms that share a wall get an *Add doorway* button, which places a door where its swing won't hit furniture, on whichever side of the wall works. Walk through the house in 3D to see how it flows. The panel lists every connection (with *Remove*) and flags rooms that overlap.
 - **Furniture:** sofas, armchairs, tables, chairs, beds, bedside tables, wardrobes, desks, rugs, and a shelving unit you design with Shelfline's configurator.
 - **Placing:** drag pieces across the floor. They snap flush to walls and to a 5 cm grid. Arrow keys nudge by 5 cm (Shift: 1 cm), R rotates, Ctrl+D duplicates, Delete removes. New pieces land in the first free spot.
 - **Does it fit?** A live report with plain-language reasons. Click any line to select the piece it's about:
